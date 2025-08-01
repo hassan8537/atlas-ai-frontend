@@ -1,5 +1,5 @@
-// src/components/ChatInterface.jsx - Enhanced with rich text and streaming support
-import React, { useState, useEffect, useRef } from "react";
+// src/components/ChatInterface.jsx - Mobile Responsive with Collapsible Sidebar
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import apiService from "../services/apiService";
 
 // Simple markdown parser for rich text
@@ -56,33 +56,42 @@ const parseMarkdown = text => {
   return html;
 };
 
-// Message component with rich text support
-const MessageContent = ({ content, isStreaming = false }) => {
+// Message component with frontend streaming simulation
+const MessageContent = ({ content, isStreaming = false, onStreamComplete }) => {
   const [displayedContent, setDisplayedContent] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const streamingRef = useRef(false);
 
   useEffect(() => {
-    if (isStreaming && content) {
-      setIsTyping(true);
+    if (isStreaming && content && !streamingRef.current) {
+      streamingRef.current = true;
       setDisplayedContent("");
 
       let index = 0;
-      const interval = setInterval(() => {
+      const streamText = () => {
         if (index < content.length) {
-          setDisplayedContent(content.slice(0, index + 1));
-          index++;
-        } else {
-          setIsTyping(false);
-          clearInterval(interval);
-        }
-      }, 20); // Adjust speed here (20ms = 50 chars per second)
+          // Add 1-3 characters at a time for more natural streaming
+          const chunkSize =
+            Math.random() > 0.7 ? 3 : Math.random() > 0.4 ? 2 : 1;
+          const nextChunk = content.slice(index, index + chunkSize);
+          setDisplayedContent(prev => prev + nextChunk);
+          index += chunkSize;
 
-      return () => clearInterval(interval);
-    } else {
+          // Variable delay to simulate real AI thinking/generation
+          const delay = Math.random() * 50 + 20; // 20-70ms delay
+          setTimeout(streamText, delay);
+        } else {
+          streamingRef.current = false;
+          onStreamComplete?.();
+        }
+      };
+
+      // Start streaming after a brief delay
+      setTimeout(streamText, 100);
+    } else if (!isStreaming) {
       setDisplayedContent(content);
-      setIsTyping(false);
+      streamingRef.current = false;
     }
-  }, [content, isStreaming]);
+  }, [content, isStreaming, onStreamComplete]);
 
   const htmlContent = parseMarkdown(displayedContent);
 
@@ -92,7 +101,7 @@ const MessageContent = ({ content, isStreaming = false }) => {
         dangerouslySetInnerHTML={{ __html: htmlContent }}
         className="whitespace-pre-wrap"
       />
-      {isTyping && (
+      {isStreaming && streamingRef.current && (
         <span className="inline-block w-2 h-4 bg-current animate-pulse ml-1">
           |
         </span>
@@ -112,6 +121,7 @@ export default function ChatInterface() {
   const [sendingMessage, setSendingMessage] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState(null);
   const [error, setError] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -122,8 +132,40 @@ export default function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
+  // Close sidebar when clicking outside on mobile
+  useEffect(() => {
+    const handleClickOutside = event => {
+      if (sidebarOpen && window.innerWidth < 768) {
+        const sidebar = document.getElementById("chat-sidebar");
+        const toggleButton = document.getElementById("sidebar-toggle");
+        if (
+          sidebar &&
+          !sidebar.contains(event.target) &&
+          !toggleButton.contains(event.target)
+        ) {
+          setSidebarOpen(false);
+        }
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [sidebarOpen]);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const toggleSidebar = () => {
+    setSidebarOpen(!sidebarOpen);
+  };
+
+  // Close sidebar when selecting a chat on mobile
+  const handleChatSelect = chatId => {
+    loadChatMessages(chatId);
+    if (window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
   };
 
   const loadChats = async () => {
@@ -207,6 +249,7 @@ export default function ChatInterface() {
         role: "assistant",
         content: "",
         createdAt: new Date().toISOString(),
+        fullContent: "", // Store the complete response
       };
 
       // Create chat object
@@ -227,24 +270,37 @@ export default function ChatInterface() {
       setShowNewChatForm(false);
       setStreamingMessageId(assistantMessageId);
 
+      // Close sidebar on mobile after creating chat
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false);
+      }
+
+      // Get response from API
       const response = await apiService.createChat(userQuery, chatTitle);
 
       if (response && response.success && response.data) {
         const { chatId, query, answer, messageId } = response.data;
 
-        // Update with real chat ID and stream the response
+        // Update with real chat ID
         const updatedChat = { ...newChatObject, id: chatId };
-        const finalAssistantMessage = {
-          ...assistantMessage,
-          id: messageId,
-          content: answer,
-        };
-
         setChats(prev =>
           prev.map(chat => (chat.id === tempChatId ? updatedChat : chat))
         );
         setActiveChat(updatedChat);
-        setMessages([userMessage, finalAssistantMessage]);
+
+        // Start frontend streaming simulation
+        setMessages(prev =>
+          prev.map(msg =>
+            msg.id === assistantMessageId
+              ? {
+                  ...msg,
+                  id: messageId,
+                  fullContent: answer,
+                  content: "", // Start with empty content for streaming
+                }
+              : msg
+          )
+        );
 
         console.log("New chat created successfully");
       } else {
@@ -253,9 +309,11 @@ export default function ChatInterface() {
     } catch (error) {
       console.error("Error creating chat:", error);
       setError("Failed to create chat: " + error.message);
+      // Remove the placeholder message on error
+      setMessages(prev => prev.slice(0, -1));
+      setStreamingMessageId(null);
     } finally {
       setSendingMessage(false);
-      setStreamingMessageId(null);
     }
   };
 
@@ -290,6 +348,7 @@ export default function ChatInterface() {
         role: "assistant",
         content: "",
         createdAt: new Date().toISOString(),
+        fullContent: "", // Store the complete response
       };
 
       // Add messages to UI
@@ -304,11 +363,16 @@ export default function ChatInterface() {
       if (response && response.success && response.data) {
         const { answer, messageId } = response.data;
 
-        // Update the assistant message with real content and ID
+        // Start frontend streaming simulation
         setMessages(prev =>
           prev.map(msg =>
             msg.id === assistantMessageId
-              ? { ...msg, id: messageId, content: answer }
+              ? {
+                  ...msg,
+                  id: messageId,
+                  fullContent: answer,
+                  content: "", // Start with empty content for streaming
+                }
               : msg
           )
         );
@@ -324,11 +388,16 @@ export default function ChatInterface() {
       // Remove failed messages
       setMessages(prev => prev.slice(0, -2));
       setNewMessage(userQuery);
+      setStreamingMessageId(null);
     } finally {
       setSendingMessage(false);
-      setStreamingMessageId(null);
     }
   };
+
+  const handleStreamComplete = useCallback(messageId => {
+    setStreamingMessageId(null);
+    console.log("Streaming completed for message:", messageId);
+  }, []);
 
   const handleKeyPress = e => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -366,6 +435,10 @@ export default function ChatInterface() {
     setNewChatTitle("");
     setError("");
     setShowNewChatForm(true);
+    // Close sidebar on mobile when starting new chat
+    if (window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
   };
 
   const cancelNewChat = () => {
@@ -382,23 +455,58 @@ export default function ChatInterface() {
   };
 
   return (
-    <div className="h-screen max-h-[70vh] flex bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden border dark:border-gray-700">
-      {/* Chat List */}
-      <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+    <div className="h-screen max-h-[100vh] md:max-h-[70vh] flex bg-white dark:bg-gray-800 rounded-none md:rounded-lg shadow overflow-hidden border-0 md:border dark:border-gray-700 relative">
+      {/* Mobile Overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Chat Sidebar */}
+      <div
+        id="chat-sidebar"
+        className={`${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        } md:translate-x-0 fixed md:relative z-50 md:z-auto w-80 md:w-1/3 h-full border-r border-gray-200 dark:border-gray-700 flex flex-col bg-white dark:bg-gray-800 transition-transform duration-300 ease-in-out`}
+      >
         <div className="p-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex justify-between items-center mb-3">
             <h3 className="text-lg font-medium text-gray-900 dark:text-white">
               Chats
             </h3>
-            <button
-              onClick={loadChats}
-              disabled={loading}
-              className="p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400 disabled:opacity-50"
-              title="Refresh chats"
-            >
-              {loading ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-gray-400"></div>
-              ) : (
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={loadChats}
+                disabled={loading}
+                className="p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400 disabled:opacity-50"
+                title="Refresh chats"
+              >
+                {loading ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-gray-400"></div>
+                ) : (
+                  <svg
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                )}
+              </button>
+              {/* Close button for mobile */}
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="md:hidden p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
+                title="Close sidebar"
+              >
                 <svg
                   className="h-4 w-4"
                   fill="none"
@@ -409,11 +517,11 @@ export default function ChatInterface() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth="2"
-                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    d="M6 18L18 6M6 6l12 12"
                   />
                 </svg>
-              )}
-            </button>
+              </button>
+            </div>
           </div>
 
           <button
@@ -445,7 +553,7 @@ export default function ChatInterface() {
               return (
                 <div
                   key={chat.id}
-                  onClick={() => loadChatMessages(chat.id)}
+                  onClick={() => handleChatSelect(chat.id)}
                   className={`p-4 border-b border-gray-100 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 ${
                     activeChat?.id === chat.id
                       ? "bg-indigo-50 dark:bg-indigo-900/20 border-l-4 border-l-indigo-500"
@@ -523,20 +631,46 @@ export default function ChatInterface() {
       </div>
 
       {/* Chat Interface */}
-      <div className="flex-1 flex flex-col">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-          <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-            {activeChat ? activeChat.title || "Chat" : "New Chat"}
-          </h3>
-          {activeChat && (
-            <p className="text-sm text-gray-500 dark:text-gray-400">
-              Chat ID: {activeChat.id}
-            </p>
-          )}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header with mobile menu button */}
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            {/* Mobile menu button */}
+            <button
+              id="sidebar-toggle"
+              onClick={toggleSidebar}
+              className="md:hidden p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
+              title="Toggle chat list"
+            >
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+            </button>
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white truncate">
+                {activeChat ? activeChat.title || "Chat" : "New Chat"}
+              </h3>
+              {activeChat && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 md:text-sm">
+                  Chat ID: {activeChat.id}
+                </p>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-4">
           {showNewChatForm ? (
             <div className="max-w-md mx-auto mt-8">
               <div className="bg-white dark:bg-gray-700 p-6 rounded-lg border-2 border-indigo-200 dark:border-indigo-600">
@@ -659,7 +793,7 @@ export default function ChatInterface() {
                   }`}
                 >
                   <div
-                    className={`max-w-xs lg:max-w-2xl px-4 py-3 rounded-lg ${
+                    className={`max-w-[85%] sm:max-w-xs lg:max-w-2xl px-4 py-3 rounded-lg ${
                       message.role === "user"
                         ? "bg-indigo-600 dark:bg-indigo-600 text-white"
                         : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
@@ -671,8 +805,11 @@ export default function ChatInterface() {
                       </p>
                     ) : (
                       <MessageContent
-                        content={message.content}
+                        content={message.fullContent || message.content}
                         isStreaming={isStreaming}
+                        onStreamComplete={() =>
+                          handleStreamComplete(message.id)
+                        }
                       />
                     )}
                     <p
@@ -709,7 +846,7 @@ export default function ChatInterface() {
 
         {/* Message Input */}
         {!showNewChatForm && (
-          <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+          <div className="p-3 md:p-4 border-t border-gray-200 dark:border-gray-700">
             <div className="flex space-x-2">
               <textarea
                 className="flex-1 resize-none border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
@@ -727,7 +864,7 @@ export default function ChatInterface() {
               <button
                 onClick={activeChat ? sendMessage : startNewChat}
                 disabled={(!newMessage.trim() && activeChat) || sendingMessage}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                className={`px-3 md:px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   (!newMessage.trim() && activeChat) || sendingMessage
                     ? "bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed"
                     : "bg-indigo-600 dark:bg-indigo-600 text-white hover:bg-indigo-700 dark:hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-800"
@@ -736,16 +873,52 @@ export default function ChatInterface() {
                 {sendingMessage ? (
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
                 ) : activeChat ? (
-                  "Send"
+                  <span className="hidden sm:inline">Send</span>
                 ) : (
-                  "New Chat"
+                  <span className="hidden sm:inline">New Chat</span>
+                )}
+                {/* Mobile icons */}
+                {!sendingMessage && (
+                  <>
+                    {activeChat ? (
+                      <svg
+                        className="h-4 w-4 sm:hidden"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                        />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="h-4 w-4 sm:hidden"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+                        />
+                      </svg>
+                    )}
+                  </>
                 )}
               </button>
             </div>
 
             <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
               {activeChat ? (
-                <span>💬 Chatting in: {activeChat.title}</span>
+                <span className="truncate">
+                  💬 Chatting in: {activeChat.title}
+                </span>
               ) : (
                 <span>✨ Click "New Chat" to start a conversation</span>
               )}
